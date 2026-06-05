@@ -1,0 +1,340 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Lock Puzzle Solver (A*)</title>
+
+<style>
+  body {
+    font-family: Arial;
+    background: #111;
+    color: #eee;
+    margin: 20px;
+  }
+
+  #explanation {
+    padding: 12px;
+    background: #1b1b1b;
+    border: 1px solid #333;
+    margin-bottom: 15px;
+    line-height: 1.4;
+  }
+
+  .grid {
+    overflow: auto;
+    margin-bottom: 15px;
+  }
+
+  .lock {
+    float: left;
+    width: 220px;
+    margin: 5px;
+    padding: 10px;
+    background: #1b1b1b;
+    border: 1px solid #333;
+  }
+
+  label {
+    font-size: 11px;
+    color: #aaa;
+    display: block;
+    margin-top: 6px;
+  }
+
+  input, textarea {
+    width: 100%;
+    background: #222;
+    color: #eee;
+    border: 1px solid #444;
+    padding: 4px;
+    font-size: 12px;
+  }
+
+  textarea {
+    height: 50px;
+    font-family: monospace;
+  }
+
+  button {
+    margin: 5px 5px 10px 0;
+    padding: 8px 12px;
+    cursor: pointer;
+  }
+
+  #output {
+    clear: both;
+    margin-top: 20px;
+    padding: 10px;
+    background: #1b1b1b;
+    border: 1px solid #333;
+  }
+
+  .step {
+    padding: 3px;
+    cursor: pointer;
+  }
+
+  .step:hover {
+    background: #333;
+  }
+
+  .active {
+    background: #555 !important;
+  }
+
+  .highlight {
+    outline: 2px solid #4caf50;
+  }
+
+  .hint {
+    font-size: 11px;
+    color: #888;
+    margin-top: 4px;
+  }
+</style>
+</head>
+
+<body>
+
+<h2>Lock Puzzle Solver (A*)</h2>
+
+<div id="explanation"></div>
+
+<div class="grid" id="locks"></div>
+
+<button onclick="addLock()">+ Add Lock</button>
+<button onclick="solve()">Solve</button>
+
+<div id="output"></div>
+
+<script>
+let lockCount = 0;
+
+// --------------------
+// UI: Add lock panel
+// --------------------
+function addLock(data = {}) {
+  const id = lockCount++;
+
+  const div = document.createElement("div");
+  div.className = "lock";
+
+  div.innerHTML = `
+    <strong>Lock ${id + 1}</strong>
+
+    <label>Start position (where the lock begins)</label>
+    <input class="start" type="number" value="${data.start ?? 1}" />
+
+    <label>Target position (where it must end up)</label>
+    <input class="target" type="number" value="${data.target ?? 1}" />
+
+    <label>Length (range = 1 → length)</label>
+    <input class="length" type="number" value="${data.length ?? 7}" />
+
+    <label>
+      Connections (edges)
+      <div class="hint">
+        Format: [[targetLockIndex, type], ...]<br/>
+        type: +1 = same direction, -1 = opposite direction<br/>
+        Example: [2, -1] means “when this lock moves, Lock 3 moves opposite”
+      </div>
+    </label>
+
+    <textarea class="edges">${JSON.stringify(data.edges ?? [], null, 0)}</textarea>
+
+    <button onclick="this.parentElement.remove()">Remove</button>
+  `;
+
+  document.getElementById("locks").appendChild(div);
+}
+
+// --------------------
+// Read locks
+// --------------------
+function readLocks() {
+  return [...document.querySelectorAll(".lock")].map(l => ({
+    start: +l.querySelector(".start").value,
+    target: +l.querySelector(".target").value,
+    length: +l.querySelector(".length").value,
+    edges: JSON.parse(l.querySelector(".edges").value || "[]")
+  }));
+}
+
+// --------------------
+// Build moves
+// --------------------
+function buildMoves(locks) {
+  const moves = [];
+
+  for (let i = 0; i < locks.length; i++) {
+    for (let dir of [-1, 1]) {
+      let delta = new Array(locks.length).fill(0);
+      delta[i] = dir;
+
+      for (let [j, sign] of locks[i].edges) {
+        delta[j] += sign * dir;
+      }
+
+      moves.push({ lock: i, dir, delta });
+    }
+  }
+
+  return moves;
+}
+
+// --------------------
+// validity
+// --------------------
+function valid(state, locks) {
+  for (let i = 0; i < state.length; i++) {
+    if (state[i] < 1 || state[i] > locks[i].length) return false;
+  }
+  return true;
+}
+
+// --------------------
+// heuristic
+// --------------------
+function heuristic(state, locks, maxEffect) {
+  let worst = 0;
+
+  for (let i = 0; i < state.length; i++) {
+    const dist = Math.abs(state[i] - locks[i].target);
+    if (maxEffect[i] === 0) {
+      if (dist !== 0) return Infinity;
+      continue;
+    }
+    worst = Math.max(worst, Math.ceil(dist / maxEffect[i]));
+  }
+
+  return worst;
+}
+
+// --------------------
+// A*
+// --------------------
+function solveAStar(locks) {
+  const n = locks.length;
+  const start = locks.map(l => l.start);
+  const target = locks.map(l => l.target);
+
+  const moves = buildMoves(locks);
+
+  const maxEffect = new Array(n).fill(0);
+  for (let m of moves) {
+    for (let i = 0; i < n; i++) {
+      maxEffect[i] = Math.max(maxEffect[i], Math.abs(m.delta[i]));
+    }
+  }
+
+  let open = [];
+  let visited = new Map();
+
+  function push(state, g, path) {
+    const h = heuristic(state, locks, maxEffect);
+    open.push({ state, g, f: g + h, path });
+    open.sort((a,b) => a.f - b.f);
+  }
+
+  push(start, 0, []);
+
+  while (open.length) {
+    const node = open.shift();
+    const key = node.state.join(",");
+
+    if (visited.has(key) && visited.get(key) <= node.g) continue;
+    visited.set(key, node.g);
+
+    if (node.state.every((v,i) => v === target[i])) {
+      return node.path;
+    }
+
+    for (let m of moves) {
+      const next = node.state.map((v,i) => v + m.delta[i]);
+      if (!valid(next, locks)) continue;
+
+      push(next, node.g + 1, node.path.concat([[m.lock, m.dir]]));
+    }
+  }
+
+  return null;
+}
+
+// --------------------
+// Explanation generator
+// --------------------
+function explain(locks) {
+  const n = locks.length;
+  const parts = [];
+
+  parts.push(
+    `You are controlling ${n} locks. Each lock sits on a numbered scale from 1 to its length.`
+  );
+
+  const ranges = locks.map((l,i) =>
+    `Lock ${i+1}: positions 1–${l.length} (start at ${l.start}, goal is ${l.target})`
+  ).join("<br>");
+
+  parts.push(`<br><b>Lock ranges:</b><br>${ranges}`);
+
+  parts.push(
+    `<br><b>How movement works:</b><br>
+    Moving a lock shifts its position by +1 (right) or -1 (left).<br>
+    Some locks are linked — moving one can also move others.<br>
+    Direct link = same direction, inverse link = opposite direction.`
+  );
+
+  document.getElementById("explanation").innerHTML = parts.join("<br>");
+}
+
+// --------------------
+// Solve + render
+// --------------------
+function solve() {
+  const locks = readLocks();
+  explain(locks);
+
+  const result = solveAStar(locks);
+  const out = document.getElementById("output");
+
+  out.innerHTML = "";
+
+  if (!result) {
+    out.textContent = "No solution found";
+    return;
+  }
+
+  const list = document.createElement("div");
+
+  result.forEach((step, i) => {
+    const [lock, dir] = step;
+
+    const div = document.createElement("div");
+    div.className = "step";
+    div.textContent = `${i+1}: ${lock+1} ${dir === 1 ? "← L" : "→ R"}`;
+
+    div.addEventListener("mouseenter", () => {
+      document.querySelectorAll(".step").forEach(s => s.classList.remove("active"));
+      div.classList.add("active");
+
+      document.querySelectorAll(".lock").forEach(l => l.classList.remove("highlight"));
+      const locksUI = document.querySelectorAll(".lock");
+      if (locksUI[lock]) locksUI[lock].classList.add("highlight");
+    });
+
+    list.appendChild(div);
+  });
+
+  out.appendChild(list);
+}
+
+// initial demo
+addLock({start:1,target:4,length:7,edges:[[2,-1]]});
+addLock({start:6,target:4,length:7,edges:[[0,-1],[2,1],[4,1]]});
+addLock({start:2,target:4,length:7,edges:[[0,1],[1,1],[3,1]]});
+addLock({start:3,target:4,length:7,edges:[]});
+addLock({start:3,target:4,length:7,edges:[[2,-1],[3,1]]});
+</script>
+
+</body>
+</html>
